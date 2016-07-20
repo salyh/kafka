@@ -14,7 +14,13 @@ package org.apache.kafka.common.serialization;
 
 import org.junit.Test;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -72,6 +78,72 @@ public class SerializationTest {
             assertEquals("Should support null in serialization and deserialization with encoding " + encoding,
                     null, deserializer.deserialize(topic, serializer.serialize(topic, null)));
         }
+    }
+    
+    @Test
+    public void testEncryptionSerializer() throws IOException {
+        String str = "my string";
+
+        File aesKey = File.createTempFile("kafka", "crypto");
+        aesKey.deleteOnExit();
+        FileOutputStream fout = new FileOutputStream(aesKey);
+        fout.write(new byte[]{1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8});
+        fout.close();
+        
+        Map<String, Object> config = new HashMap<>();
+        config.put(SerdeCryptoBase.CRYPTO_AES_IV_FILEPATH, aesKey.getAbsolutePath());
+        config.put(SerdeCryptoBase.CRYPTO_AES_KEY_FILEPATH, aesKey.getAbsolutePath());
+        config.put(EncrpytingSerializer.CRYPTO_VALUE_SERIALIZER, StringSerializer.class);
+        config.put(DecryptingDeserializer.CRYPTO_VALUE_DESERIALIZER, StringDeserializer.class.getName());
+
+        Serializer<String> serializer = new EncrpytingSerializer<String>();
+        serializer.configure(config, false);
+        Deserializer<String> deserializer = new DecryptingDeserializer<String>();
+        deserializer.configure(config, false);
+
+        assertEquals("", str, deserializer.deserialize(topic, serializer.serialize(topic, str)));
+        assertEquals("", null, deserializer.deserialize(topic, serializer.serialize(topic, null)));
+
+    }
+    
+    @Test
+    public void testEncryptionSerializerRSA() throws IOException, NoSuchAlgorithmException {
+        String str = "my string";
+
+        File pubKey = File.createTempFile("kafka", "crypto");
+        pubKey.deleteOnExit();
+        File privKey = File.createTempFile("kafka", "crypto");
+        privKey.deleteOnExit();
+        
+        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+        keyGen.initialize(1024);
+        KeyPair pair = keyGen.genKeyPair();
+        byte[] publicKey = pair.getPublic().getEncoded();
+        byte[] privateKey = pair.getPrivate().getEncoded();
+        
+        FileOutputStream fout = new FileOutputStream(pubKey);
+        fout.write(publicKey);
+        fout.close();
+        
+        fout = new FileOutputStream(privKey);
+        fout.write(privateKey);
+        fout.close();
+        
+        Map<String, Object> config = new HashMap<>();
+        config.put(SerdeCryptoBase.CRYPTO_TRANSFORMATION, "RSA/ECB/OAEPWithSHA-1AndMGF1Padding");
+        config.put(SerdeCryptoBase.CRYPTO_RSA_PRIVATEKEY_FILEPATH, privKey.getAbsolutePath());
+        config.put(SerdeCryptoBase.CRYPTO_RSA_PUBLICKEY_FILEPATH, pubKey.getAbsolutePath());
+        config.put(EncrpytingSerializer.CRYPTO_VALUE_SERIALIZER, StringSerializer.class.getName());
+        config.put(DecryptingDeserializer.CRYPTO_VALUE_DESERIALIZER, StringDeserializer.class);
+
+        Serializer<String> serializer = new EncrpytingSerializer<String>();
+        serializer.configure(config, false);
+        Deserializer<String> deserializer = new DecryptingDeserializer<String>();
+        deserializer.configure(config, false);
+
+        assertEquals("", str, deserializer.deserialize(topic, serializer.serialize(topic, str)));
+        assertEquals("", null, deserializer.deserialize(topic, serializer.serialize(topic, null)));
+
     }
 
     @Test
