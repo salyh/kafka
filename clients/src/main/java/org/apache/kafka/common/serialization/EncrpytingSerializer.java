@@ -40,4 +40,8 @@ public class EncrpytingSerializer<T> extends SerdeCryptoBase implements Serializ
             inner.close();
         }
     }
+    
+    public void newKey() {
+        super.newKey();
+    }
 }
