@@ -16,44 +16,49 @@
  */
 package org.apache.kafka.common.security.ssl;
 
-import org.apache.kafka.common.Configurable;
-import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.config.SslConfigs;
-import org.apache.kafka.common.network.Mode;
-import org.apache.kafka.common.config.types.Password;
-
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
+import java.security.Key;
 import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
 
-import javax.net.ssl.KeyManager;
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
-import javax.net.ssl.TrustManagerFactory;
+
+import org.apache.kafka.common.Configurable;
+import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.config.SslConfigs;
+import org.apache.kafka.common.config.types.Password;
+import org.apache.kafka.common.network.Mode;
+
+import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.OpenSsl;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
 
 public class SslFactory implements Configurable {
 
     private final Mode mode;
     private final String clientAuthConfigOverride;
 
-    private String protocol;
-    private String provider;
-    private String kmfAlgorithm;
-    private String tmfAlgorithm;
     private SecurityStore keystore = null;
-    private Password keyPassword;
     private SecurityStore truststore;
     private String[] cipherSuites;
     private String[] enabledProtocols;
     private String endpointIdentification;
-    private SSLContext sslContext;
+    private SslContext sslContext;
     private boolean needClientAuth;
     private boolean wantClientAuth;
+    private final SslProvider sslProvider = OpenSsl.isAvailable()?SslProvider.OPENSSL:SslProvider.JDK;
 
     public SslFactory(Mode mode) {
         this(mode, null);
@@ -66,8 +71,6 @@ public class SslFactory implements Configurable {
 
     @Override
     public void configure(Map<String, ?> configs) throws KafkaException {
-        this.protocol =  (String) configs.get(SslConfigs.SSL_PROTOCOL_CONFIG);
-        this.provider = (String) configs.get(SslConfigs.SSL_PROVIDER_CONFIG);
 
         @SuppressWarnings("unchecked")
         List<String> cipherSuitesList = (List<String>) configs.get(SslConfigs.SSL_CIPHER_SUITES_CONFIG);
@@ -93,9 +96,6 @@ public class SslFactory implements Configurable {
                 this.wantClientAuth = true;
         }
 
-        this.kmfAlgorithm = (String) configs.get(SslConfigs.SSL_KEYMANAGER_ALGORITHM_CONFIG);
-        this.tmfAlgorithm = (String) configs.get(SslConfigs.SSL_TRUSTMANAGER_ALGORITHM_CONFIG);
-
         createKeystore((String) configs.get(SslConfigs.SSL_KEYSTORE_TYPE_CONFIG),
                        (String) configs.get(SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG),
                        (Password) configs.get(SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG),
@@ -112,34 +112,42 @@ public class SslFactory implements Configurable {
     }
 
 
-    private SSLContext createSSLContext() throws GeneralSecurityException, IOException  {
-        SSLContext sslContext;
-        if (provider != null)
-            sslContext = SSLContext.getInstance(protocol, provider);
-        else
-            sslContext = SSLContext.getInstance(protocol);
-
-        KeyManager[] keyManagers = null;
-        if (keystore != null) {
-            String kmfAlgorithm = this.kmfAlgorithm != null ? this.kmfAlgorithm : KeyManagerFactory.getDefaultAlgorithm();
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(kmfAlgorithm);
-            KeyStore ks = keystore.load();
-            Password keyPassword = this.keyPassword != null ? this.keyPassword : keystore.password;
-            kmf.init(ks, keyPassword.value().toCharArray());
-            keyManagers = kmf.getKeyManagers();
+    private SslContext createSSLContext() throws GeneralSecurityException, IOException  {
+        
+        //TODO keystore and truststore handling is strange here
+        //Its now setup it that way that the unit tests work but this needs rework
+        
+        if(mode == Mode.CLIENT) {
+            SslContextBuilder ctxBuilder = SslContextBuilder
+                    .forClient()
+                    .applicationProtocolConfig(ApplicationProtocolConfig.DISABLED)
+                    .sslProvider(sslProvider)
+                    .trustManager(truststore.getCertificateChain());
+            
+            if(keystore != null) {
+                    //should the client send also certificates to the server for mutual/two way SSL?
+                    ctxBuilder.keyManager(keystore.getDecryptedKey(), keystore.getCertificateChain());
+            }
+                    
+            return ctxBuilder.build();
+        } else {
+            SslContextBuilder ctxBuilder = SslContextBuilder
+                     //keystore should contain the private key as well as the certificate chain for the server
+                     //Its now setup it that way that the unit tests work but this needs rework
+                    .forServer(keystore.getDecryptedKey(), truststore.getCertificateChain())
+                    .applicationProtocolConfig(ApplicationProtocolConfig.DISABLED)
+                    .sslProvider(sslProvider)
+                    
+                    //that neccessary if the client send certificates to prove identity
+                    //check that this certificates are trusted
+                    .trustManager(truststore.getCertificateChain());
+            
+            return ctxBuilder.build();
         }
-
-        String tmfAlgorithm = this.tmfAlgorithm != null ? this.tmfAlgorithm : TrustManagerFactory.getDefaultAlgorithm();
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(tmfAlgorithm);
-        KeyStore ts = truststore == null ? null : truststore.load();
-        tmf.init(ts);
-
-        sslContext.init(keyManagers, tmf.getTrustManagers(), null);
-        return sslContext;
     }
 
     public SSLEngine createSslEngine(String peerHost, int peerPort) {
-        SSLEngine sslEngine = sslContext.createSSLEngine(peerHost, peerPort);
+        SSLEngine sslEngine = sslContext.newEngine(PooledByteBufAllocator.DEFAULT, peerHost, peerPort);
         if (cipherSuites != null) sslEngine.setEnabledCipherSuites(cipherSuites);
         if (enabledProtocols != null) sslEngine.setEnabledProtocols(enabledProtocols);
 
@@ -158,13 +166,16 @@ public class SslFactory implements Configurable {
         return sslEngine;
     }
 
-    /**
-     * Returns a configured SSLContext.
-     * @return SSLContext.
-     */
-    public SSLContext sslContext() {
-        return sslContext;
-    }
+    //TODO figure out how we can create a SSL Server Socket for the Echo server
+    ///**
+    // * Returns a configured SSLContext.
+    // * @return SSLContext.
+    // */
+    //public SslContext sslContext() {
+    //    return sslContext;
+    //}
+    
+    
 
     private void createKeystore(String type, String path, Password password, Password keyPassword) {
         if (path == null && password != null) {
@@ -172,8 +183,7 @@ public class SslFactory implements Configurable {
         } else if (path != null && password == null) {
             throw new KafkaException("SSL key store is specified, but key store password is not specified.");
         } else if (path != null && password != null) {
-            this.keystore = new SecurityStore(type, path, password);
-            this.keyPassword = keyPassword;
+            this.keystore = new SecurityStore(type, path, password, keyPassword);
         }
     }
 
@@ -183,19 +193,65 @@ public class SslFactory implements Configurable {
         } else if (path != null && password == null) {
             throw new KafkaException("SSL trust store is specified, but trust store password is not specified.");
         } else if (path != null && password != null) {
-            this.truststore = new SecurityStore(type, path, password);
+            this.truststore = new SecurityStore(type, path, password, null);
         }
     }
 
     private class SecurityStore {
         private final String type;
         private final String path;
-        private final Password password;
+        private final Password storePassword;
+        private Key key;
+        private X509Certificate[] certs;
 
-        private SecurityStore(String type, String path, Password password) {
+        private SecurityStore(String type, String path, Password storePassword, Password keyPassword) {
             this.type = type == null ? KeyStore.getDefaultType() : type;
             this.path = path;
-            this.password = password;
+            this.storePassword = storePassword;
+
+            try {
+                KeyStore store = load();
+                Enumeration<String> aliases = store.aliases();
+                while (aliases.hasMoreElements()) {
+                    String alias = aliases.nextElement();
+
+                    if (store.isKeyEntry(alias) && key == null) {
+                        //We just take the first key we find
+                        //TODO introduce 'alias' as configuration option here
+                        key = store.getKey(alias, keyPassword.value().toCharArray());
+                    } else if (certs == null) {
+                         //We just take the first certificate or certificate chain we find
+                        //TODO introduce 'alias' as configuration option here
+                        
+                        Certificate cert = store.getCertificate(alias);
+                        if (cert == null) {
+                            Certificate[] _certs = store.getCertificateChain(alias);
+                            List<X509Certificate> c = new ArrayList<>();
+
+                            for (int i = 0; i < _certs.length; i++) {
+                                Certificate certificate = _certs[i];
+                                c.add((X509Certificate) certificate);
+                            }
+
+                            this.certs = c.toArray(new X509Certificate[0]);
+                        } else {
+                            this.certs = new X509Certificate[] { (X509Certificate) cert };
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                throw new KafkaException(e);
+            }
+        }
+        
+        //TODO getCertificateChain(String alias)
+        private X509Certificate[] getCertificateChain() {
+            return this.certs;
+        }
+        
+        //TODO getDecryptedKey(String alias)
+        private PrivateKey getDecryptedKey() {
+            return (PrivateKey) key;
         }
 
         private KeyStore load() throws GeneralSecurityException, IOException {
@@ -203,7 +259,7 @@ public class SslFactory implements Configurable {
             try {
                 KeyStore ks = KeyStore.getInstance(type);
                 in = new FileInputStream(path);
-                ks.load(in, password.value().toCharArray());
+                ks.load(in, storePassword.value().toCharArray());
                 return ks;
             } finally {
                 if (in != null) in.close();

@@ -15,6 +15,9 @@ package org.apache.kafka.common.network;
 import org.apache.kafka.common.protocol.SecurityProtocol;
 import org.apache.kafka.common.security.ssl.SslFactory;
 
+import io.netty.handler.ssl.SslContext;
+
+import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import java.io.DataInputStream;
@@ -45,8 +48,8 @@ class EchoServer extends Thread {
             case SSL:
                 this.sslFactory = new SslFactory(Mode.SERVER);
                 this.sslFactory.configure(configs);
-                SSLContext sslContext = this.sslFactory.sslContext();
-                this.serverSocket = sslContext.getServerSocketFactory().createServerSocket(0);
+                SslContext sslContext = null;//this.sslFactory.sslContext();
+                this.serverSocket = null;
                 break;
             case PLAINTEXT:
                 this.serverSocket = new ServerSocket(0);
