@@ -17,6 +17,44 @@ import java.util.Map;
 
 import javax.crypto.Cipher;
 
+/**
+ * 
+ * This is a serialization wrapper which adds message encryption. Its intended to be used together with {@link DecryptingDeserializer} 
+ * 
+ * Configuration<p>
+ * <ul>
+ * <li><em>crypto.rsa.publickey.filepath</em> path on the local filesystem which hold the RSA public key of the consumer
+ * <li><em>crypto.value.serializer</em> is the class or full qualified class name or the wrapped serializer
+ * </ul>
+ * 
+ * Each message is encrypted with AES before its sent to Kafka. The AES key as well as the initialization vector are random.
+ * The AES key is attached to the message in a RSA encrypted manner. The IV is also attached but not RSA encrypted. There is also a hash value
+ * of the AES key to allow consumers caching of decrypted AES keys. Finally we have a few magic and header bytes.
+ * The resulting byte array looks therefore like this:
+ * 
+ * <pre>MMLLLHH..HHEEEE..EEEEIIII..IIIOOOOO....OOOOOO</pre>
+ * 
+ * <ul>
+ * <li> MM: Two magic bytes 0xDF 0xBB to detect if this byte sequence is encrypted or not
+ * <li> LLL: Three bytes indicating the length of the AES key hash, the RSA encrypted AES key, the IV
+ * <li> HH..HH: AES key hash
+ * <li> EE..EE: RSA encrypted AES key
+ * <li> II..II: Initialization vector
+ * <li> OO..OO: The AES encrypted original message
+ * </ul>
+ * 
+ * <em>HHLLL</em> is called the encryption header and consists of 5 bytes.
+ * 
+ * <ul>
+ * <li> H1: 0xDF
+ * <li> H2: 0xBB
+ * <li> L1: length of the AES key hash
+ * <li> L2: RSA factor f so that f*128*8 evaluates to the RSA keysize
+ * <li> L3: length of the initialization vector 
+ * </ul>
+ * 
+ * @param <T> The type to be serialized from (applied to the wrapped serializer)
+ */
 public class EncrpytingSerializer<T> extends SerdeCryptoBase implements Serializer<T> {
 
     public static final String CRYPTO_VALUE_SERIALIZER = "crypto.value.serializer";

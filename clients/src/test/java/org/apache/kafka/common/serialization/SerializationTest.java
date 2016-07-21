@@ -82,7 +82,7 @@ public class SerializationTest {
     
     @Test
     public void testEncryptionSerializer() throws IOException, NoSuchAlgorithmException {
-        String str = "my string";
+        String str = "my string my string my string my string my string";
 
         File pubKey = File.createTempFile("kafka", "crypto");
         pubKey.deleteOnExit();
@@ -90,7 +90,7 @@ public class SerializationTest {
         privKey.deleteOnExit();
         
         KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
-        keyGen.initialize(1024);
+        keyGen.initialize(1024*2);
         KeyPair pair = keyGen.genKeyPair();
         byte[] publicKey = pair.getPublic().getEncoded();
         byte[] privateKey = pair.getPrivate().getEncoded();
@@ -125,6 +125,18 @@ public class SerializationTest {
         assertEquals(null, deserializer.deserialize(topic, serializer.serialize(topic, null)));
         assertEquals(str, deserializer.deserialize(topic, serializer.serialize(topic, str)));
         assertEquals(null, deserializer.deserialize(topic, serializer.serialize(topic, null)));
+        
+        str = new String(publicKey);
+        assertEquals(str, deserializer.deserialize(topic, serializer.serialize(topic, str)));
+        
+        str = "";
+        assertEquals(str, deserializer.deserialize(topic, serializer.serialize(topic, str)));
+        
+        str = "x";
+        assertEquals(str, deserializer.deserialize(topic, serializer.serialize(topic, str)));
+        
+        str = "unencrypted";
+        assertEquals(str, deserializer.deserialize(topic, new StringSerializer().serialize(topic, str)));
 
     }
 

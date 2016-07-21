@@ -17,6 +17,22 @@ import java.util.Map;
 
 import javax.crypto.Cipher;
 
+/**
+ * 
+ * This is a deserialization wrapper which adds message encryption. Its intended to be used together with {@link EncrpytingSerializer} 
+ * 
+ * Configuration<p>
+ * <ul>
+ * <li><em>crypto.rsa.privatekey.filepath</em> path on the local filesystem which hold the RSA private key of the consumer
+ * <li><em>crypto.value.deserializer</em> is the class or full qualified class name or the wrapped deserializer
+ * </ul>
+ * 
+ * See {@link EncrpytingSerializer} on how encryption works
+ * 
+ * This class will auto detect if an incoming message is encrypted. If not then no decryption attempt is made and message gets handled normally.
+ * 
+ * @param <T> The type to be serialized from (applied to the wrapped serializer)
+ */
 public class DecryptingDeserializer<T> extends SerdeCryptoBase implements Deserializer<T> {
 
     public static final String CRYPTO_VALUE_DESERIALIZER = "crypto.value.deserializer";

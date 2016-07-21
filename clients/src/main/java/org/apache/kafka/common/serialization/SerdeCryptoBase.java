@@ -17,8 +17,6 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.security.KeyFactory;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -43,50 +41,61 @@ import org.apache.kafka.common.utils.Utils;
 import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.encoders.Hex;
 
+//TODO need to make at least the producer/serializer code multithreading safe
 public abstract class SerdeCryptoBase {
 
+    private static final Map<String, byte[]> aesDecryptMap = new HashMap<>(); //TODO check thread safeness
     private static final byte[] MAGIC_BYTES = new byte[] { (byte) 0xDF, (byte) 0xBB };
-    private static final String AES = "AES";
-    private static final String RSA = "RSA";
+    private static final int MAGIC_BYTES_LENGTH = MAGIC_BYTES.length;
+    private static final int HEADER_LENGTH = MAGIC_BYTES_LENGTH+3;
     public static final String CRYPTO_RSA_PRIVATEKEY_FILEPATH = "crypto.rsa.privatekey.filepath";
     public static final String CRYPTO_RSA_PUBLICKEY_FILEPATH = "crypto.rsa.publickey.filepath";
-    protected static final String DEFAULT_TRANSFORMATION = "AES/CBC/PKCS5Padding";
+    protected static final String DEFAULT_TRANSFORMATION = "AES/CBC/PKCS5Padding"; //TODO allow other like GCM
+    private static final String AES = "AES";
+    private static final String RSA = "RSA";
     private int opMode;
     private ProducerCryptoBundle producerCryptoBundle = null;
     private ConsumerCryptoBundle consumerCryptoBundle = null;
-    private static final Map<String, Cipher> aesDecryptMap = new HashMap<>();
+    
+    protected SerdeCryptoBase() {
+        super();
+    }
 
     private static class ConsumerCryptoBundle {
 
         private Cipher rsaDecrypt;
 
-        public ConsumerCryptoBundle(PrivateKey privateKey) throws Exception {
+        private ConsumerCryptoBundle(PrivateKey privateKey) throws Exception {
             rsaDecrypt = Cipher.getInstance(RSA);
             rsaDecrypt.init(Cipher.DECRYPT_MODE, privateKey);
         }
 
-        private byte[] aesDecrypt(byte[] enrypted) throws KafkaException {
+        private byte[] aesDecrypt(byte[] encrypted) throws KafkaException {
             try {
-                if (enrypted[0] == MAGIC_BYTES[0] && enrypted[1] == MAGIC_BYTES[1]) {
-                    short len = ByteBuffer.wrap(enrypted, 2, 2).order(ByteOrder.BIG_ENDIAN).getShort();
-                    byte[] hash = Arrays.copyOfRange(enrypted, 4, 24);
-                    byte[] encryptedAesKeyIv = Arrays.copyOfRange(enrypted, 24, len - 20 + 25 - 1);
-                    int offset = MAGIC_BYTES.length + 2 + len;
-                    Cipher dec;
+                if (encrypted[0] == MAGIC_BYTES[0] && encrypted[1] == MAGIC_BYTES[1]) {
+                    byte hashLen = encrypted[2];
+                    byte rsaFactor = encrypted[3];
+                    byte ivLen = encrypted[4];
+                    int offset = HEADER_LENGTH+hashLen+(rsaFactor*128)+ivLen;
+                    byte[] aesHash = Arrays.copyOfRange(encrypted, HEADER_LENGTH, HEADER_LENGTH+hashLen);
+                    byte[] iv = Arrays.copyOfRange(encrypted, HEADER_LENGTH+hashLen+(rsaFactor*128), HEADER_LENGTH+hashLen+(rsaFactor*128)+ivLen);
 
-                    if ((dec = aesDecryptMap.get(Hex.toHexString(hash))) != null) {
-                        return crypt(dec, enrypted, offset, enrypted.length - offset);
-                    } else {
-                        byte[] aesKeyIv = crypt(rsaDecrypt, encryptedAesKeyIv);
+                    byte[] aesKey;
+
+                    if ((aesKey = aesDecryptMap.get(Hex.toHexString(aesHash))) != null) {
                         Cipher aesDecrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
-                        aesDecrypt.init(Cipher.DECRYPT_MODE, createAESSecretKey(Arrays.copyOfRange(aesKeyIv, 0, 16)),
-                                new IvParameterSpec(Arrays.copyOfRange(aesKeyIv, 16, 32)));
-                        aesDecryptMap.put(Hex.toHexString(hash(aesKeyIv)), aesDecrypt);
-
-                        return crypt(aesDecrypt, enrypted, offset, enrypted.length - offset);
+                        aesDecrypt.init(Cipher.DECRYPT_MODE, createAESSecretKey(aesKey), new IvParameterSpec(iv));
+                        return crypt(aesDecrypt, encrypted, offset, encrypted.length - offset);
+                    } else {
+                        byte[] rsaEncryptedAesKey = Arrays.copyOfRange(encrypted, HEADER_LENGTH+hashLen, HEADER_LENGTH+hashLen+(rsaFactor*128));
+                        aesKey = crypt(rsaDecrypt, rsaEncryptedAesKey);
+                        Cipher aesDecrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
+                        aesDecrypt.init(Cipher.DECRYPT_MODE, createAESSecretKey(aesKey), new IvParameterSpec(iv));
+                        aesDecryptMap.put(Hex.toHexString(aesHash), aesKey);
+                        return crypt(aesDecrypt, encrypted, offset, encrypted.length - offset);
                     }
                 } else {
-                    return enrypted; //not encrypted, just bypass decryption
+                    return encrypted; //not encrypted, just bypass decryption
                 }
             } catch (Exception e) {
                 throw new KafkaException(e);
@@ -96,62 +105,56 @@ public abstract class SerdeCryptoBase {
 
     private static class ProducerCryptoBundle {
 
+        private volatile SecretKey aesKey;
         private volatile byte[] aesHash;
-        private final byte[] aesKey = new byte[16];
-        private final byte[] aesIv = new byte[16];
-        private volatile byte[] rsaEncyptedAesKeyIv;
-        private volatile byte[] aesHashRsaEncryptedAesKeyIv;
+        private volatile byte[] rsaEncyptedAesKey;
         private final Cipher rsa;
-        private Cipher aesEncrypt;
+        private final Cipher aesEncrypt;
+        private final SecureRandom random = SecureRandom.getInstanceStrong();
 
         //Producer
         private ProducerCryptoBundle(PublicKey publicKey) throws Exception {
+            aesEncrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
             rsa = Cipher.getInstance("RSA");
             rsa.init(Cipher.ENCRYPT_MODE, publicKey);
             newKey();
         }
 
+        //TODO check thread safeness
         private void newKey() throws Exception {
-            SecureRandom random = SecureRandom.getInstanceStrong();
-            random.nextBytes(aesKey);
-            random.nextBytes(aesIv);
-            byte[] aesKeyIv = Arrays.concatenate(aesKey, aesIv);
-            aesHash = hash(aesKeyIv);
-            rsaEncyptedAesKeyIv = crypt(rsa, aesKeyIv);
-            aesEncrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
-            aesEncrypt.init(Cipher.ENCRYPT_MODE, createAESSecretKey(aesKey), new IvParameterSpec(aesIv));
-            aesHashRsaEncryptedAesKeyIv = Arrays.concatenate(aesHash, rsaEncyptedAesKeyIv);
+            byte[] aesKeyBytes = new byte[16];
+            random.nextBytes(aesKeyBytes);
+            aesKey = createAESSecretKey(aesKeyBytes);
+            aesHash = hash(aesKeyBytes);
+            rsaEncyptedAesKey = crypt(rsa, aesKeyBytes);
         }
 
         private byte[] aesEncrypt(byte[] plain) throws KafkaException {
             try {
-                short hashEncLen = (short) aesHashRsaEncryptedAesKeyIv.length;
-                byte[] lenBytes = new byte[2];
-                // Big Endian
-                lenBytes[0] = (byte) (hashEncLen >> 8);
-                lenBytes[1] = (byte) hashEncLen;
-                byte[] enc = crypt(aesEncrypt, plain);
-                return Arrays.concatenate(MAGIC_BYTES, lenBytes, aesHashRsaEncryptedAesKeyIv, enc);
+                byte[] aesIv = new byte[16];
+                random.nextBytes(aesIv);
+                aesEncrypt.init(Cipher.ENCRYPT_MODE, aesKey, new IvParameterSpec(aesIv));
+                byte[] prolog = Arrays.concatenate(aesHash, rsaEncyptedAesKey, aesIv);
+                byte[] header = Arrays.concatenate(MAGIC_BYTES, new byte[]{(byte)aesHash.length, (byte)(rsaEncyptedAesKey.length/128),(byte)aesIv.length});
+                return Arrays.concatenate(header, prolog, crypt(aesEncrypt, plain));
             } catch (Exception e) {
                 throw new KafkaException(e);
             }
         }
-
     }
     
 
     protected void init(int opMode, Map<String, ?> configs, boolean isKey) throws KafkaException {
         this.opMode = opMode;
-        String rsaPublicKeyFile = (String) configs.get(CRYPTO_RSA_PUBLICKEY_FILEPATH);
-        String rsaPrivateKeyFile = (String) configs.get(CRYPTO_RSA_PRIVATEKEY_FILEPATH);
-
+        
         try {
-
             if (opMode == Cipher.DECRYPT_MODE) {
                 //Consumer
+                String rsaPrivateKeyFile = (String) configs.get(CRYPTO_RSA_PRIVATEKEY_FILEPATH);
                 consumerCryptoBundle = new ConsumerCryptoBundle(createRSAPrivateKey(readBytesFromFile(rsaPrivateKeyFile)));
             } else {
                 //Producer
+                String rsaPublicKeyFile = (String) configs.get(CRYPTO_RSA_PUBLICKEY_FILEPATH);
                 producerCryptoBundle = new ProducerCryptoBundle(createRSAPublicKey(readBytesFromFile(rsaPublicKeyFile)));
             }
         } catch (Exception e) {
@@ -197,10 +200,6 @@ public abstract class SerdeCryptoBase {
         } else {
             throw new KafkaException("Unexpected type '" + val.getClass() + "' for '" + key + "'");
         }
-    }
-
-    private static <T> T valueOrDefault(Map<String, ?> map, String key, T defaultValue) {
-        return map.containsKey(key) ? (T) map.get(key) : defaultValue;
     }
 
     private static PrivateKey createRSAPrivateKey(byte[] encodedKey) throws NoSuchAlgorithmException, InvalidKeySpecException {
