@@ -16,9 +16,11 @@ package org.apache.kafka.common.serialization;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.security.KeyFactory;
-import java.security.MessageDigest;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
@@ -28,6 +30,8 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.zip.Adler32;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -41,29 +45,65 @@ import org.apache.kafka.common.utils.Utils;
 import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.encoders.Hex;
 
-//TODO need to make at least the producer/serializer code multithreading safe
 public abstract class SerdeCryptoBase {
 
-    private static final Map<String, byte[]> aesDecryptMap = new HashMap<>(); //TODO check thread safeness
+    private static final Map<String, byte[]> aesDecryptMap = new HashMap<>();
     private static final byte[] MAGIC_BYTES = new byte[] { (byte) 0xDF, (byte) 0xBB };
     private static final int MAGIC_BYTES_LENGTH = MAGIC_BYTES.length;
-    private static final int HEADER_LENGTH = MAGIC_BYTES_LENGTH+3;
+    private static final int HEADER_LENGTH = MAGIC_BYTES_LENGTH + 3;
     public static final String CRYPTO_RSA_PRIVATEKEY_FILEPATH = "crypto.rsa.privatekey.filepath";
     public static final String CRYPTO_RSA_PUBLICKEY_FILEPATH = "crypto.rsa.publickey.filepath";
     protected static final String DEFAULT_TRANSFORMATION = "AES/CBC/PKCS5Padding"; //TODO allow other like GCM
     private static final String AES = "AES";
     private static final String RSA = "RSA";
+    private static final int RSA_MULTIPLICATOR = 128;
     private int opMode;
     private ProducerCryptoBundle producerCryptoBundle = null;
     private ConsumerCryptoBundle consumerCryptoBundle = null;
-    
+    private final static SecureRandom random;
+
+    static {
+        try {
+            random = SecureRandom.getInstanceStrong();
+        } catch (NoSuchAlgorithmException e) {
+            //could not happen
+            throw new KafkaException(e);
+        }
+    }
+
     protected SerdeCryptoBase() {
         super();
     }
+    
+    public static void main(String[] args) throws Exception {
+        String uuid = UUID.randomUUID().toString();
+        int keysize = 1024;
+        File pubKey = new File("rsa_publickey_"+keysize+"_"+uuid);
+        File privKey = new File("rsa_privatekey_"+keysize+"_"+uuid);
 
+        KeyPairGenerator keyGen = KeyPairGenerator.getInstance(RSA);
+        keyGen.initialize(keysize);
+        KeyPair pair = keyGen.genKeyPair();
+        byte[] publicKey = pair.getPublic().getEncoded();
+        byte[] privateKey = pair.getPrivate().getEncoded();
+        
+        FileOutputStream fout = new FileOutputStream(pubKey);
+        fout.write(publicKey);
+        fout.close();
+        
+        fout = new FileOutputStream(privKey);
+        fout.write(privateKey);
+        fout.close();
+        
+        System.out.println(pubKey.getAbsolutePath());
+        System.out.println(privKey.getAbsolutePath());
+    }
+
+    //not thread safe
     private static class ConsumerCryptoBundle {
 
         private Cipher rsaDecrypt;
+        final Cipher aesDecrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
 
         private ConsumerCryptoBundle(PrivateKey privateKey) throws Exception {
             rsaDecrypt = Cipher.getInstance(RSA);
@@ -73,80 +113,100 @@ public abstract class SerdeCryptoBase {
         private byte[] aesDecrypt(byte[] encrypted) throws KafkaException {
             try {
                 if (encrypted[0] == MAGIC_BYTES[0] && encrypted[1] == MAGIC_BYTES[1]) {
-                    byte hashLen = encrypted[2];
-                    byte rsaFactor = encrypted[3];
-                    byte ivLen = encrypted[4];
-                    int offset = HEADER_LENGTH+hashLen+(rsaFactor*128)+ivLen;
-                    byte[] aesHash = Arrays.copyOfRange(encrypted, HEADER_LENGTH, HEADER_LENGTH+hashLen);
-                    byte[] iv = Arrays.copyOfRange(encrypted, HEADER_LENGTH+hashLen+(rsaFactor*128), HEADER_LENGTH+hashLen+(rsaFactor*128)+ivLen);
+                    final byte hashLen = encrypted[2];
+                    final byte rsaFactor = encrypted[3];
+                    final byte ivLen = encrypted[4];
+                    final int offset = HEADER_LENGTH + hashLen + (rsaFactor * RSA_MULTIPLICATOR) + ivLen;
+                    final String aesHash = Hex.toHexString(Arrays.copyOfRange(encrypted, HEADER_LENGTH, HEADER_LENGTH + hashLen));
+                    final byte[] iv = Arrays.copyOfRange(encrypted, HEADER_LENGTH + hashLen + (rsaFactor * RSA_MULTIPLICATOR),
+                            HEADER_LENGTH + hashLen + (rsaFactor * RSA_MULTIPLICATOR) + ivLen);
 
                     byte[] aesKey;
 
-                    if ((aesKey = aesDecryptMap.get(Hex.toHexString(aesHash))) != null) {
-                        Cipher aesDecrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
+                    if ((aesKey = aesDecryptMap.get(aesHash)) != null) {
                         aesDecrypt.init(Cipher.DECRYPT_MODE, createAESSecretKey(aesKey), new IvParameterSpec(iv));
                         return crypt(aesDecrypt, encrypted, offset, encrypted.length - offset);
                     } else {
-                        byte[] rsaEncryptedAesKey = Arrays.copyOfRange(encrypted, HEADER_LENGTH+hashLen, HEADER_LENGTH+hashLen+(rsaFactor*128));
+                        byte[] rsaEncryptedAesKey = Arrays.copyOfRange(encrypted, HEADER_LENGTH + hashLen,
+                                HEADER_LENGTH + hashLen + (rsaFactor * RSA_MULTIPLICATOR));
                         aesKey = crypt(rsaDecrypt, rsaEncryptedAesKey);
-                        Cipher aesDecrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
                         aesDecrypt.init(Cipher.DECRYPT_MODE, createAESSecretKey(aesKey), new IvParameterSpec(iv));
-                        aesDecryptMap.put(Hex.toHexString(aesHash), aesKey);
+                        aesDecryptMap.put(aesHash, aesKey);
                         return crypt(aesDecrypt, encrypted, offset, encrypted.length - offset);
                     }
                 } else {
                     return encrypted; //not encrypted, just bypass decryption
                 }
             } catch (Exception e) {
-                throw new KafkaException(e);
+                return encrypted; //not encrypted, just bypass decryption
+                //throw new KafkaException(e);
             }
         }
     }
 
-    private static class ProducerCryptoBundle {
+    private static class ThreadAwareKeyInfo {
+        private final SecretKey aesKey;
+        private final byte[] aesHash;
+        private final byte[] rsaEncyptedAesKey;
+        private final Cipher rsaCipher;
+        private final Cipher aesCipher;
 
-        private volatile SecretKey aesKey;
-        private volatile byte[] aesHash;
-        private volatile byte[] rsaEncyptedAesKey;
-        private final Cipher rsa;
-        private final Cipher aesEncrypt;
-        private final SecureRandom random = SecureRandom.getInstanceStrong();
-
-        //Producer
-        private ProducerCryptoBundle(PublicKey publicKey) throws Exception {
-            aesEncrypt = Cipher.getInstance(DEFAULT_TRANSFORMATION);
-            rsa = Cipher.getInstance("RSA");
-            rsa.init(Cipher.ENCRYPT_MODE, publicKey);
-            newKey();
-        }
-
-        //TODO check thread safeness
-        private void newKey() throws Exception {
+        protected ThreadAwareKeyInfo(PublicKey publicKey) throws Exception {
             byte[] aesKeyBytes = new byte[16];
             random.nextBytes(aesKeyBytes);
+            aesCipher = Cipher.getInstance(DEFAULT_TRANSFORMATION);
             aesKey = createAESSecretKey(aesKeyBytes);
             aesHash = hash(aesKeyBytes);
-            rsaEncyptedAesKey = crypt(rsa, aesKeyBytes);
+            rsaCipher = Cipher.getInstance(RSA);
+            rsaCipher.init(Cipher.ENCRYPT_MODE, publicKey);
+            rsaEncyptedAesKey = crypt(rsaCipher, aesKeyBytes);
+        }
+    }
+
+    //threads safe
+    private static class ProducerCryptoBundle {
+
+        private ThreadLocal<ThreadAwareKeyInfo> keyInfo = new ThreadLocal<>();
+        private final PublicKey publicKey;
+
+        private ProducerCryptoBundle(PublicKey publicKey) throws Exception {
+            this.publicKey = publicKey;
+        }
+
+        private void newKey() throws Exception {
+            final ThreadAwareKeyInfo ki = new ThreadAwareKeyInfo(publicKey);
+            keyInfo.set(ki);
         }
 
         private byte[] aesEncrypt(byte[] plain) throws KafkaException {
+
+            if (keyInfo.get() == null) {
+                try {
+                    newKey();
+                } catch (Exception e) {
+                    throw new KafkaException(e);
+                }
+            }
+
+            final ThreadAwareKeyInfo ki = keyInfo.get();
+
             try {
-                byte[] aesIv = new byte[16];
+                final byte[] aesIv = new byte[16];
                 random.nextBytes(aesIv);
-                aesEncrypt.init(Cipher.ENCRYPT_MODE, aesKey, new IvParameterSpec(aesIv));
-                byte[] prolog = Arrays.concatenate(aesHash, rsaEncyptedAesKey, aesIv);
-                byte[] header = Arrays.concatenate(MAGIC_BYTES, new byte[]{(byte)aesHash.length, (byte)(rsaEncyptedAesKey.length/128),(byte)aesIv.length});
-                return Arrays.concatenate(header, prolog, crypt(aesEncrypt, plain));
+                ki.aesCipher.init(Cipher.ENCRYPT_MODE, ki.aesKey, new IvParameterSpec(aesIv));
+                final byte[] prolog = Arrays.concatenate(ki.aesHash, ki.rsaEncyptedAesKey, aesIv);
+                final byte[] header = Arrays.concatenate(MAGIC_BYTES, new byte[] { (byte) ki.aesHash.length,
+                        (byte) (ki.rsaEncyptedAesKey.length / RSA_MULTIPLICATOR), (byte) aesIv.length });
+                return Arrays.concatenate(header, prolog, crypt(ki.aesCipher, plain));
             } catch (Exception e) {
                 throw new KafkaException(e);
             }
         }
     }
-    
 
     protected void init(int opMode, Map<String, ?> configs, boolean isKey) throws KafkaException {
         this.opMode = opMode;
-        
+
         try {
             if (opMode == Cipher.DECRYPT_MODE) {
                 //Consumer
@@ -175,7 +235,10 @@ public abstract class SerdeCryptoBase {
             return producerCryptoBundle.aesEncrypt(array);
         }
     }
-    
+
+    /**
+     * Generate new AES key for the current thread
+     */
     protected void newKey() {
         try {
             producerCryptoBundle.newKey();
@@ -183,6 +246,8 @@ public abstract class SerdeCryptoBase {
             throw new KafkaException(e);
         }
     }
+
+    //Hereafter there are only helper methods
 
     @SuppressWarnings("unchecked")
     protected <T> T newInstance(Map<String, ?> map, String key, Class<T> klass) throws KafkaException {
@@ -245,12 +310,24 @@ public abstract class SerdeCryptoBase {
 
     private static byte[] hash(byte[] toHash) {
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA1");
-            md.update(toHash);
-            return md.digest();
-        } catch (NoSuchAlgorithmException e) {
+            Adler32 adler = new Adler32();
+            adler.update(toHash);
+            return longToBytes(adler.getValue());
+            //MessageDigest md = MessageDigest.getInstance("SHA1");
+            //md.update(toHash);
+            //return md.digest();
+        } catch (Exception e) {
             throw new KafkaException(e);
         }
+    }
+
+    private static byte[] longToBytes(long l) {
+        byte[] result = new byte[8];
+        for (int i = 7; i >= 0; i--) {
+            result[i] = (byte) (l & 0xFF);
+            l >>= 8;
+        }
+        return result;
     }
 
     private static byte[] crypt(Cipher c, byte[] plain) throws IllegalBlockSizeException, BadPaddingException {

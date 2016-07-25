@@ -43,19 +43,23 @@ import javax.crypto.Cipher;
  * <li> OO..OO: The AES encrypted original message
  * </ul>
  * 
- * <em>HHLLL</em> is called the encryption header and consists of 5 bytes.
+ * <em>MMLLL</em> is called the encryption header and consists of 5 bytes.
  * 
  * <ul>
- * <li> H1: 0xDF
- * <li> H2: 0xBB
+ * <li> M1: 0xDF
+ * <li> M2: 0xBB
  * <li> L1: length of the AES key hash
- * <li> L2: RSA factor f so that f*128*8 evaluates to the RSA keysize
- * <li> L3: length of the initialization vector 
+ * <li> L2: RSA factor f so that f*128*8 evaluates to the RSA keysize (in bits)
+ * <li> L3: length of the initialization vector in bytes (always 16 for AES)
  * </ul>
+ * 
+ * <p>
+ * <b>Note</b>: As Producers are multithreading-safe this serializer is also thread-safe
+ * <p>
  * 
  * @param <T> The type to be serialized from (applied to the wrapped serializer)
  */
-public class EncrpytingSerializer<T> extends SerdeCryptoBase implements Serializer<T> {
+public class EncryptingSerializer<T> extends SerdeCryptoBase implements Serializer<T> {
 
     public static final String CRYPTO_VALUE_SERIALIZER = "crypto.value.serializer";
     private Serializer<T> inner;

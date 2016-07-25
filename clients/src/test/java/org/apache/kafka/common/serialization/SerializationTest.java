@@ -106,10 +106,10 @@ public class SerializationTest {
         Map<String, Object> config = new HashMap<>();
         config.put(SerdeCryptoBase.CRYPTO_RSA_PRIVATEKEY_FILEPATH, privKey.getAbsolutePath());
         config.put(SerdeCryptoBase.CRYPTO_RSA_PUBLICKEY_FILEPATH, pubKey.getAbsolutePath());
-        config.put(EncrpytingSerializer.CRYPTO_VALUE_SERIALIZER, StringSerializer.class.getName());
+        config.put(EncryptingSerializer.CRYPTO_VALUE_SERIALIZER, StringSerializer.class.getName());
         config.put(DecryptingDeserializer.CRYPTO_VALUE_DESERIALIZER, StringDeserializer.class);
 
-        EncrpytingSerializer<String> serializer = new EncrpytingSerializer<String>();
+        EncryptingSerializer<String> serializer = new EncryptingSerializer<String>();
         serializer.configure(config, false);
         Deserializer<String> deserializer = new DecryptingDeserializer<String>();
         deserializer.configure(config, false);

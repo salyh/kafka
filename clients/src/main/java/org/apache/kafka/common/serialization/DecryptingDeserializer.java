@@ -18,8 +18,9 @@ import java.util.Map;
 import javax.crypto.Cipher;
 
 /**
+ * This is a deserialization (for the Consumer) wrapper which adds transparent end-to-end message encryption. 
+ * Its intended to be used together with {@link EncryptingSerializer} 
  * 
- * This is a deserialization wrapper which adds message encryption. Its intended to be used together with {@link EncrpytingSerializer} 
  * 
  * Configuration<p>
  * <ul>
@@ -27,11 +28,13 @@ import javax.crypto.Cipher;
  * <li><em>crypto.value.deserializer</em> is the class or full qualified class name or the wrapped deserializer
  * </ul>
  * 
- * See {@link EncrpytingSerializer} on how encryption works
+ * See {@link EncryptingSerializer} on how encryption works
  * 
  * This class will auto detect if an incoming message is encrypted. If not then no decryption attempt is made and message gets handled normally.
- * 
- * @param <T> The type to be serialized from (applied to the wrapped serializer)
+ * <p>
+ * <b>Note</b>: As Consumers are not multithreading-safe this deserializer is also not thread-safe
+ * <p>
+ * @param <T> The type to be deserialized from (applied to the wrapped deserializer)
  */
 public class DecryptingDeserializer<T> extends SerdeCryptoBase implements Deserializer<T> {
 
