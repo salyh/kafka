@@ -21,6 +21,8 @@ import javax.crypto.Cipher;
  * This is a deserialization (for the Consumer) wrapper which adds transparent end-to-end message encryption. 
  * Its intended to be used together with {@link EncryptingSerializer}
  * <p>
+ * This deserializer can approx. deserialize 230000 messages/sec of 1kb size (benchmarked with Oracle Java 8 and hardware which supports AES-NI instructions)
+ * <p>
  * Configuration<p>
  * <ul>
  * <li><em>crypto.rsa.privatekey.filepath</em> path on the local filesystem which hold the RSA private key (PKCS#8 format) of the consumer

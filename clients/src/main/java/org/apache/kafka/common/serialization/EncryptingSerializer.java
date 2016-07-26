@@ -21,6 +21,8 @@ import javax.crypto.Cipher;
  * 
  * This is a serialization wrapper which adds message encryption. Its intended to be used together with {@link DecryptingDeserializer} 
  * <p>
+ * This serializer can approx. serialize 1000000/sec messages of 1kb size (benchmarked with Oracle Java 8 and hardware which supports AES-NI instructions)
+ * <p>
  * Configuration<p>
  * <ul>
  * <li><em>crypto.rsa.publickey.filepath</em> path on the local filesystem which hold the RSA public key (X.509 format) of the consumer
