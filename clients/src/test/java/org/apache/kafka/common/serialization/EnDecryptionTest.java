@@ -57,6 +57,9 @@ public class EnDecryptionTest {
         publicKey = pair.getPublic().getEncoded();
         privateKey = pair.getPrivate().getEncoded();
         
+        //System.out.println("private key format: "+pair.getPrivate().getFormat()); // PKCS#8
+        //System.out.println("public key format: "+pair.getPublic().getFormat()); // X.509
+        
         FileOutputStream fout = new FileOutputStream(pubKey);
         fout.write(publicKey);
         fout.close();
@@ -75,6 +78,7 @@ public class EnDecryptionTest {
         config.put(SerdeCryptoBase.CRYPTO_RSA_PUBLICKEY_FILEPATH, pubKey.getAbsolutePath());
         config.put(EncryptingSerializer.CRYPTO_VALUE_SERIALIZER, StringSerializer.class.getName());
         config.put(DecryptingDeserializer.CRYPTO_VALUE_DESERIALIZER, StringDeserializer.class);
+        config.put(SerdeCryptoBase.CRYPTO_IGNORE_DECRYPT_FAILURES, "TRUE");
 
         EncryptingSerializer<String> serializer = new EncryptingSerializer<String>();
         serializer.configure(config, false);

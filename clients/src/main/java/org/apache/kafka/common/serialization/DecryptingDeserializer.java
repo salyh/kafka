@@ -19,13 +19,15 @@ import javax.crypto.Cipher;
 
 /**
  * This is a deserialization (for the Consumer) wrapper which adds transparent end-to-end message encryption. 
- * Its intended to be used together with {@link EncryptingSerializer} 
- * 
- * 
+ * Its intended to be used together with {@link EncryptingSerializer}
+ * <p>
  * Configuration<p>
  * <ul>
- * <li><em>crypto.rsa.privatekey.filepath</em> path on the local filesystem which hold the RSA private key of the consumer
+ * <li><em>crypto.rsa.privatekey.filepath</em> path on the local filesystem which hold the RSA private key (PKCS#8 format) of the consumer
  * <li><em>crypto.value.deserializer</em> is the class or full qualified class name or the wrapped deserializer
+ * <li><em>crypto.ignore_decrypt_failures</em> Skip message decryption on error and just pass the byte[] unencrypted (optional, default is "false"). Possible values are "true" or "false".
+ * <li><em>crypto.hash.method</em> Type of hash generated for the AES key (optional, default is "adler32"). Possible values are all supported
+ * by MessageDigest.getInstance(method). Needs NOT to be cryptographically strong because its only used for caching the key.
  * </ul>
  * 
  * See {@link EncryptingSerializer} on how encryption works

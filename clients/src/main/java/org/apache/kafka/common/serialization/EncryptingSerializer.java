@@ -20,11 +20,13 @@ import javax.crypto.Cipher;
 /**
  * 
  * This is a serialization wrapper which adds message encryption. Its intended to be used together with {@link DecryptingDeserializer} 
- * 
+ * <p>
  * Configuration<p>
  * <ul>
- * <li><em>crypto.rsa.publickey.filepath</em> path on the local filesystem which hold the RSA public key of the consumer
+ * <li><em>crypto.rsa.publickey.filepath</em> path on the local filesystem which hold the RSA public key (X.509 format) of the consumer
  * <li><em>crypto.value.serializer</em> is the class or full qualified class name or the wrapped serializer
+ * <li><em>crypto.hash.method</em> Type of hash generated for the AES key (optional, default is "adler32"). Possible values are all supported
+ * by MessageDigest.getInstance(method). Needs NOT to be cryptographically strong because its only used for caching the key.
  * </ul>
  * 
  * Each message is encrypted with AES before its sent to Kafka. The AES key as well as the initialization vector are random.
@@ -52,6 +54,9 @@ import javax.crypto.Cipher;
  * <li> L2: RSA factor f so that f*128*8 evaluates to the RSA keysize (in bits)
  * <li> L3: length of the initialization vector in bytes (always 16 for AES)
  * </ul>
+ * 
+ * RSA public/private keypair can be generated with<br>
+ * <em>java org.apache.kafka.common.serialization.SerdeCryptoBase <keysize in bits></em>
  * 
  * <p>
  * <b>Note</b>: As Producers are multithreading-safe this serializer is also thread-safe

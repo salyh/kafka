@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
@@ -53,11 +54,15 @@ public abstract class SerdeCryptoBase {
     private static final int HEADER_LENGTH = MAGIC_BYTES_LENGTH + 3;
     public static final String CRYPTO_RSA_PRIVATEKEY_FILEPATH = "crypto.rsa.privatekey.filepath";
     public static final String CRYPTO_RSA_PUBLICKEY_FILEPATH = "crypto.rsa.publickey.filepath";
+    public static final String CRYPTO_HASH_METHOD = "crypto.hash.method";
+    public static final String CRYPTO_IGNORE_DECRYPT_FAILURES = "crypto.ignore_decrypt_failures";
     protected static final String DEFAULT_TRANSFORMATION = "AES/CBC/PKCS5Padding"; //TODO allow other like GCM
     private static final String AES = "AES";
     private static final String RSA = "RSA";
     private static final int RSA_MULTIPLICATOR = 128;
     private int opMode;
+    private static String hashMethod = "adler32";
+    private static boolean ignoreDecryptFailures = false;
     private ProducerCryptoBundle producerCryptoBundle = null;
     private ConsumerCryptoBundle consumerCryptoBundle = null;
     private final static SecureRandom random;
@@ -66,7 +71,7 @@ public abstract class SerdeCryptoBase {
         try {
             random = SecureRandom.getInstanceStrong();
         } catch (NoSuchAlgorithmException e) {
-            //could not happen
+            //should not happen
             throw new KafkaException(e);
         }
     }
@@ -76,25 +81,26 @@ public abstract class SerdeCryptoBase {
     }
     
     public static void main(String[] args) throws Exception {
+        int keysize = (args != null && args.length > 0) ? Integer.parseInt(args[0]) : 2048;
+        System.out.println("Keysize: "+keysize+" bits");
         String uuid = UUID.randomUUID().toString();
-        int keysize = 1024;
-        File pubKey = new File("rsa_publickey_"+keysize+"_"+uuid);
-        File privKey = new File("rsa_privatekey_"+keysize+"_"+uuid);
+        File pubKey = new File("rsa_publickey_" + keysize + "_" + uuid);
+        File privKey = new File("rsa_privatekey_" + keysize + "_" + uuid);
 
         KeyPairGenerator keyGen = KeyPairGenerator.getInstance(RSA);
         keyGen.initialize(keysize);
         KeyPair pair = keyGen.genKeyPair();
         byte[] publicKey = pair.getPublic().getEncoded();
         byte[] privateKey = pair.getPrivate().getEncoded();
-        
+
         FileOutputStream fout = new FileOutputStream(pubKey);
         fout.write(publicKey);
         fout.close();
-        
+
         fout = new FileOutputStream(privKey);
         fout.write(privateKey);
         fout.close();
-        
+
         System.out.println(pubKey.getAbsolutePath());
         System.out.println(privKey.getAbsolutePath());
     }
@@ -138,8 +144,11 @@ public abstract class SerdeCryptoBase {
                     return encrypted; //not encrypted, just bypass decryption
                 }
             } catch (Exception e) {
-                return encrypted; //not encrypted, just bypass decryption
-                //throw new KafkaException(e);
+                if(ignoreDecryptFailures) {
+                    return encrypted; //Probably not encrypted, just bypass decryption
+                }
+                
+                throw new KafkaException("Decrypt failed",e);
             }
         }
     }
@@ -207,6 +216,18 @@ public abstract class SerdeCryptoBase {
     protected void init(int opMode, Map<String, ?> configs, boolean isKey) throws KafkaException {
         this.opMode = opMode;
 
+        final String hashMethodProperty = (String) configs.get(CRYPTO_HASH_METHOD);
+        
+        if(hashMethodProperty != null && hashMethodProperty.length() != 0) {
+            hashMethod = hashMethodProperty;
+        }
+        
+        final String ignoreDecryptFailuresProperty = (String) configs.get(CRYPTO_IGNORE_DECRYPT_FAILURES);
+        
+        if(ignoreDecryptFailuresProperty != null && ignoreDecryptFailuresProperty.length() != 0) {
+            ignoreDecryptFailures = Boolean.parseBoolean(ignoreDecryptFailuresProperty);
+        }
+        
         try {
             if (opMode == Cipher.DECRYPT_MODE) {
                 //Consumer
@@ -310,12 +331,15 @@ public abstract class SerdeCryptoBase {
 
     private static byte[] hash(byte[] toHash) {
         try {
-            Adler32 adler = new Adler32();
-            adler.update(toHash);
-            return longToBytes(adler.getValue());
-            //MessageDigest md = MessageDigest.getInstance("SHA1");
-            //md.update(toHash);
-            //return md.digest();
+            if ("adler32".equalsIgnoreCase(hashMethod)) {
+                Adler32 adler = new Adler32();
+                adler.update(toHash);
+                return longToBytes(adler.getValue());
+            } else {
+                MessageDigest md = MessageDigest.getInstance(hashMethod);
+                md.update(toHash);
+                return md.digest();
+            }
         } catch (Exception e) {
             throw new KafkaException(e);
         }
