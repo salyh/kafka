@@ -175,7 +175,16 @@ public abstract class SerdeCryptoBase {
     //threads safe
     private static class ProducerCryptoBundle {
 
-        private ThreadLocal<ThreadAwareKeyInfo> keyInfo = new ThreadLocal<>();
+        private ThreadLocal<ThreadAwareKeyInfo> keyInfo = new ThreadLocal<ThreadAwareKeyInfo>() {
+            @Override
+            protected ThreadAwareKeyInfo initialValue() {
+                try {
+                    return new ThreadAwareKeyInfo(publicKey);
+                } catch (Exception e) {
+                    throw new KafkaException(e);
+                }
+            }
+        };
         private final PublicKey publicKey;
 
         private ProducerCryptoBundle(PublicKey publicKey) throws Exception {
@@ -188,15 +197,6 @@ public abstract class SerdeCryptoBase {
         }
 
         private byte[] aesEncrypt(byte[] plain) throws KafkaException {
-
-            if (keyInfo.get() == null) {
-                try {
-                    newKey();
-                } catch (Exception e) {
-                    throw new KafkaException(e);
-                }
-            }
-
             final ThreadAwareKeyInfo ki = keyInfo.get();
 
             try {
